@@ -1,0 +1,144 @@
+version: "3.7"
+
+services:
+  # Zookeeper Service
+  zookeeper:
+    image: zookeeper:3.6
+    container_name: zookeeper
+    hostname: zookeeper
+    ports:
+      - "2181:2181"
+    networks:
+      - bigdata-network
+
+  # Hadoop NameNode
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop2.7.4-java8
+    container_name: namenode
+    hostname: namenode
+    volumes:
+      - namenode:/hadoop/dfs/name
+    environment:
+      - CLUSTER_NAME=test
+    env_file:
+      - ./hadoop-hive.env
+    ports:
+      - "3000:50070"  # NameNode Web UI
+      - "9000:9000"    # NameNode RPC
+    networks:
+      - bigdata-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:50070"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Hadoop DataNode
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop2.7.4-java8
+    container_name: datanode
+    hostname: datanode
+    volumes:
+      - datanode:/hadoop/dfs/data
+    environment:
+      - SERVICE_PRECONDITION=namenode:50070
+      - CLUSTER_NAME=test
+    env_file:
+      - ./hadoop-hive.env
+    ports:
+      - "5000:50075"  # DataNode Web UI
+    depends_on:
+      namenode:
+        condition: service_healthy
+    networks:
+      - bigdata-network
+
+  # HBase Service
+  hbase:
+    image: bde2020/hbase-standalone:1.0.0-hbase1.2.6
+    container_name: hbase
+    hostname: hbase
+    depends_on:
+      - namenode
+      - datanode
+      - zookeeper
+    environment:
+      - HBASE_MANAGES_ZK=false
+      - ZOOKEEPER_QUORUM=zookeeper
+      - HBASE_ROOTDIR=hdfs://namenode:9000/hbase
+    ports:
+      - "16010:16010"  # HBase Master UI
+      - "16020:16020"  # HBase RegionServer UI
+    volumes:
+      - hbase:/hbase
+    networks:
+      - bigdata-network
+
+  # PostgreSQL for Hive Metastore
+  hive-metastore-postgresql:
+    image: bde2020/hive-metastore-postgresql:2.3.0
+    networks:
+      - bigdata-network
+
+  # Hive Metastore Service
+  hive-metastore:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    env_file:
+      - ./hadoop-hive.env
+    container_name: hive-metastore
+    hostname: hive-metastore
+    command: /opt/hive/bin/hive --service metastore
+    depends_on:
+      - hive-metastore-postgresql
+      - namenode
+      - datanode
+      - zookeeper
+    environment:
+      SERVICE_PRECONDITION: "namenode:50070 datanode:50075 hive-metastore-postgresql:5432"
+    ports:
+      - "9083:9083"  # Metastore Thrift Service
+    networks:
+      - bigdata-network
+
+  # Hive Server Service
+  hive-server:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    container_name: hive-server
+    hostname: hive-server
+    env_file:
+      - ./hadoop-hive.env
+    depends_on:
+      - hive-metastore
+      - hbase
+      - namenode
+      - datanode
+      - zookeeper
+    environment:
+      HIVE_CORE_CONF_javax_jdo_option_ConnectionURL: "jdbc:postgresql://hive-metastore/metastore"
+      SERVICE_PRECONDITION: "hive-metastore:9083"
+    ports:
+      - "10000:10000"  # HiveServer2 Thrift
+    volumes:
+      - hive:/opt/hive
+      - ./hbase/conf/hbase-site.xml:/opt/hive/conf/hbase-site.xml  # Mount HBase config
+    networks:
+      - bigdata-network
+
+  # Presto Coordinator (Optional)
+  presto-coordinator:
+    image: shawnzhu/prestodb:0.181
+    ports:
+      - "8080:8080"
+    networks:
+      - bigdata-network
+
+volumes:
+  namenode:
+  datanode:
+  hbase:
+  metastore_db:
+  hive:
+
+networks:
+  bigdata-network:
+    driver: bridge
